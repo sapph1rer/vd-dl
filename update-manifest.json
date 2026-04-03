@@ -1,0 +1,12 @@
+{
+  "version": "0.13.1",
+  "notes": "Bug fixes and stability improvements.",
+  "script": {
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vddl.zip",
+    "sha256": "SHA256_OF_VDDL_ZIP"
+  },
+  "exe": {
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vd-dl.exe",
+    "sha256": "SHA256_OF_VD_DL_EXE"
+  }
+}
