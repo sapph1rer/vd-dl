@@ -1,16 +1,16 @@
 {
-  "version": "0.13.3",
-  "notes": "Improvements add change the update function to be better.",
+  "version": "0.13.4",
+  "notes": "Add Extract support web section in cli interactive.",
   "script": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vddl.zip",
-    "sha256": "0087d09a731ad1ddc081c9d0f384cd8263ea62891563735dabc617701d147cfe"
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.4/vddl.zip",
+    "sha256": "c33a9ccc0d4754cd29bf1b86d81cd4cf1cce34a7b4a8aa534f3f662b64dc41a2"
   },
   "exe": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vd-dl.exe",
-    "sha256": "837dd8f7dc8f57ab23f8076ca2f95c0f1edbd96d3dfc0be6bbb9fc0e2179a43f"
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.4/vd-dl.exe",
+    "sha256": "655df95526c66f3cb32477b7effda1c69f5f91fde540b9e440a6bbb48e6687dd"
   },
   "updater": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vddl-updater.exe",
-    "sha256": "969b6cbe07ffd482fc3b5c25fda5a921a530b3aa54fa4af3be4cb752563e535b"
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.4/vddl-updater.exe",
+    "sha256": "3f064e9347c63da3945242bd171515f3ab4c0241f7fe9bb70bb8fb0d5ff4e3b3"
   }
 }
