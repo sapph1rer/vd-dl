@@ -7,7 +7,7 @@ from typing import Optional
 from .downloader import Downloader
 from .errors import DownloadError, UpdateError
 from .output import Colorizer, _supports_color
-from .updater import apply_self_update, check_for_update
+from .updater import apply_self_update, check_for_update, resolve_manifest_url
 from .version import __version__
 
 
@@ -87,10 +87,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check for a newer vd-dl version",
     )
     check_update_parser.add_argument(
-        "--manifest-url",
-        help="Update manifest URL (JSON)",
-    )
-    check_update_parser.add_argument(
         "--timeout",
         type=float,
         default=20.0,
@@ -100,10 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     self_update_parser = subparsers.add_parser(
         "self-update",
         help="Download and apply the latest version",
-    )
-    self_update_parser.add_argument(
-        "--manifest-url",
-        help="Update manifest URL (JSON)",
     )
     self_update_parser.add_argument(
         "--timeout",
@@ -508,13 +500,13 @@ def _run_download(
 def _run_check_update(
     stderr_colors: Colorizer,
     *,
-    manifest_url: Optional[str],
     timeout: float,
 ) -> int:
+    print(f"[update] Checking updates from {resolve_manifest_url(None)}")
     try:
         info, available = check_for_update(
             current_version=__version__,
-            manifest_url=manifest_url,
+            manifest_url=None,
             timeout=timeout,
         )
     except UpdateError as exc:
@@ -541,14 +533,14 @@ def _run_check_update(
 def _run_self_update(
     stderr_colors: Colorizer,
     *,
-    manifest_url: Optional[str],
     timeout: float,
     assume_yes: bool,
 ) -> int:
+    print(f"[update] Checking updates from {resolve_manifest_url(None)}")
     try:
         info, available = check_for_update(
             current_version=__version__,
-            manifest_url=manifest_url,
+            manifest_url=None,
             timeout=min(timeout, 30.0),
         )
     except UpdateError as exc:
@@ -593,16 +585,14 @@ def _interactive_update_flow(
 ) -> tuple[InteractiveConfig, bool]:
     print("Check for updates")
     print()
-    manifest_default = session_config.update_manifest or os.environ.get("VDDL_UPDATE_MANIFEST", "")
-    manifest_url = _prompt("Update manifest URL", manifest_default).strip() or None
-    if not manifest_url:
-        print("No manifest URL provided. Set VDDL_UPDATE_MANIFEST or paste a URL.")
-        return session_config, False
+    manifest_url = resolve_manifest_url(None)
+    print(f"Manifest: {manifest_url}")
+    print()
 
     try:
         info, available = check_for_update(
             current_version=__version__,
-            manifest_url=manifest_url,
+            manifest_url=None,
             timeout=20.0,
         )
     except UpdateError as exc:
@@ -659,6 +649,40 @@ def _interactive_update_flow(
     return next_session, result.restart_required
 
 
+def _auto_check_updates_on_startup(stderr_colors: Colorizer) -> bool:
+    if not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
+        return False
+
+    print(f"[update] Auto check from {resolve_manifest_url(None)}")
+    try:
+        info, available = check_for_update(
+            current_version=__version__,
+            manifest_url=None,
+            timeout=8.0,
+        )
+    except Exception:
+        return False
+
+    if not available:
+        return False
+
+    print(f"[update] New version available: {info.version} (current {__version__})")
+    if not _prompt_yes_no("Update now", default=True):
+        return False
+
+    try:
+        result = apply_self_update(info, timeout=120.0)
+    except UpdateError as exc:
+        print(f"{stderr_colors.error('[error]')} {exc}")
+        return False
+    except Exception as exc:
+        print(f"{stderr_colors.error('[error]')} Unexpected update error: {exc}")
+        return False
+
+    print(result.message)
+    return True
+
+
 def _download_more_episodes_if_requested(
     session_config: InteractiveConfig,
     config: InteractiveConfig,
@@ -710,6 +734,9 @@ def _download_more_episodes_if_requested(
 
 
 def interactive_main(stderr_colors: Colorizer) -> int:
+    if _auto_check_updates_on_startup(stderr_colors):
+        return 0
+
     last_exit = 0
     alternate_screen = _enter_alternate_screen()
     session_config = InteractiveConfig(
@@ -721,7 +748,7 @@ def interactive_main(stderr_colors: Colorizer) -> int:
         referer=None,
         quality="best",
         list_formats=False,
-        update_manifest=(os.environ.get("VDDL_UPDATE_MANIFEST") or "").strip() or None,
+        update_manifest=resolve_manifest_url(None),
     )
     try:
         try:
@@ -829,13 +856,11 @@ def main() -> int:
     if args.command == "check-update":
         return _run_check_update(
             stderr_colors,
-            manifest_url=args.manifest_url,
             timeout=args.timeout,
         )
     if args.command == "self-update":
         return _run_self_update(
             stderr_colors,
-            manifest_url=args.manifest_url,
             timeout=args.timeout,
             assume_yes=args.yes,
         )

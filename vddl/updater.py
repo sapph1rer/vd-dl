@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ import requests
 
 from .errors import UpdateError
 
-UPDATE_MANIFEST_ENV = "VDDL_UPDATE_MANIFEST"
+DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/sapph1rer/vd-dl/main/update-manifest.json"
 
 
 @dataclass
@@ -35,11 +36,8 @@ class UpdateApplyResult:
 
 
 def resolve_manifest_url(explicit: Optional[str] = None) -> Optional[str]:
-    value = (explicit or "").strip()
-    if value:
-        return value
-    env_value = (os.environ.get(UPDATE_MANIFEST_ENV) or "").strip()
-    return env_value or None
+    del explicit
+    return DEFAULT_UPDATE_MANIFEST_URL
 
 
 def _normalize_version(version: str) -> Tuple[int, ...]:
@@ -68,26 +66,10 @@ def _read_manifest_payload(payload: dict, manifest_url: str) -> UpdateInfo:
     script_cfg = payload.get("script") if isinstance(payload.get("script"), dict) else {}
     exe_cfg = payload.get("exe") if isinstance(payload.get("exe"), dict) else {}
 
-    script_url = str(
-        payload.get("script_url")
-        or script_cfg.get("url")
-        or ""
-    ).strip() or None
-    script_sha256 = str(
-        payload.get("script_sha256")
-        or script_cfg.get("sha256")
-        or ""
-    ).strip().lower() or None
-    exe_url = str(
-        payload.get("exe_url")
-        or exe_cfg.get("url")
-        or ""
-    ).strip() or None
-    exe_sha256 = str(
-        payload.get("exe_sha256")
-        or exe_cfg.get("sha256")
-        or ""
-    ).strip().lower() or None
+    script_url = str(payload.get("script_url") or script_cfg.get("url") or "").strip() or None
+    script_sha256 = str(payload.get("script_sha256") or script_cfg.get("sha256") or "").strip().lower() or None
+    exe_url = str(payload.get("exe_url") or exe_cfg.get("url") or "").strip() or None
+    exe_sha256 = str(payload.get("exe_sha256") or exe_cfg.get("sha256") or "").strip().lower() or None
 
     return UpdateInfo(
         version=version,
@@ -101,8 +83,18 @@ def _read_manifest_payload(payload: dict, manifest_url: str) -> UpdateInfo:
 
 
 def fetch_update_info(manifest_url: str, timeout: float = 20.0) -> UpdateInfo:
+    cache_busted_url = manifest_url
+    sep = "&" if "?" in manifest_url else "?"
+    cache_busted_url = f"{manifest_url}{sep}_ts={int(time.time())}"
     try:
-        response = requests.get(manifest_url, timeout=timeout)
+        response = requests.get(
+            cache_busted_url,
+            timeout=timeout,
+            headers={
+                "Cache-Control": "no-cache, no-store, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
         response.raise_for_status()
     except requests.RequestException as exc:
         raise UpdateError(f"Could not fetch update manifest: {exc}") from exc
@@ -123,11 +115,6 @@ def check_for_update(
     timeout: float = 20.0,
 ) -> Tuple[UpdateInfo, bool]:
     resolved = resolve_manifest_url(manifest_url)
-    if not resolved:
-        raise UpdateError(
-            "Update manifest URL is not configured. "
-            "Set VDDL_UPDATE_MANIFEST or pass --manifest-url."
-        )
     info = fetch_update_info(resolved, timeout=timeout)
     return info, is_newer_version(info.version, current_version)
 
@@ -142,15 +129,83 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest().lower()
 
 
-def _download_file(url: str, dest: Path, timeout: float) -> None:
+def _format_bytes(num: float) -> str:
+    if num <= 0:
+        return "0.00B"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    idx = 0
+    value = float(num)
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    return f"{value:6.2f}{units[idx]}"
+
+
+def _format_eta(seconds: float) -> str:
+    if seconds < 0 or seconds == float("inf"):
+        return "--:--"
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
+def _progress_bar(percent: float, width: int = 18) -> str:
+    clamped = max(0.0, min(percent, 100.0))
+    filled = int(round((clamped / 100.0) * width))
+    filled = max(0, min(width, filled))
+    return "[" + ("=" * filled) + ("-" * (width - filled)) + "]"
+
+
+def _build_progress_line(prefix: str, done: int, total: int, elapsed: float) -> str:
+    speed = done / max(elapsed, 1e-6)
+    if total > 0:
+        percent = min((done / total) * 100.0, 100.0)
+        eta = (total - done) / speed if speed > 0 else float("inf")
+        return (
+            f"{prefix} {_progress_bar(percent)} {percent:5.1f}% "
+            f"{_format_bytes(done):>10}/{_format_bytes(total):>10} "
+            f"{_format_bytes(speed):>9}/s ETA {_format_eta(eta)}"
+        )
+    return (
+        f"{prefix} {_progress_bar(0.0)} {'??.?%':>5} "
+        f"{_format_bytes(done):>10}/{'unknown':>10} "
+        f"{_format_bytes(speed):>9}/s ETA --:--"
+    )
+
+
+def _download_file(url: str, dest: Path, timeout: float, *, prefix: str = "[update]") -> None:
+    last_len = 0
     try:
         with requests.get(url, stream=True, timeout=timeout) as response:
             response.raise_for_status()
+            total_size = int(response.headers.get("Content-Length") or 0)
+            start_time = time.time()
+            last_render = 0.0
+            done_bytes = 0
+            sys.stdout.write(f"{prefix} Downloading {url}\n")
+            sys.stdout.flush()
             with dest.open("wb") as out:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        out.write(chunk)
+                    if not chunk:
+                        continue
+                    out.write(chunk)
+                    done_bytes += len(chunk)
+                    now = time.time()
+                    if (now - last_render) >= 0.15:
+                        line = _build_progress_line(prefix, done_bytes, total_size, now - start_time)
+                        sys.stdout.write("\r" + line + (" " * max(last_len - len(line), 0)))
+                        sys.stdout.flush()
+                        last_len = len(line)
+                        last_render = now
+            final_line = _build_progress_line(prefix, done_bytes, total_size, max(time.time() - start_time, 1e-6))
+            sys.stdout.write("\r" + final_line + (" " * max(last_len - len(final_line), 0)) + "\n")
+            sys.stdout.flush()
     except requests.RequestException as exc:
+        if last_len:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         raise UpdateError(f"Download failed: {exc}") from exc
 
 
@@ -188,11 +243,17 @@ def _apply_script_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
         tmp_path = Path(tmp_dir)
         archive_path = tmp_path / "update.zip"
         extract_dir = tmp_path / "extract"
-        _download_file(info.script_url, archive_path, timeout)
+        _download_file(info.script_url, archive_path, timeout, prefix="[update]")
+        sys.stdout.write("[update] Verifying package integrity...\n")
+        sys.stdout.flush()
         _verify_sha256(archive_path, info.script_sha256)
+        sys.stdout.write("[update] Extracting package...\n")
+        sys.stdout.flush()
         with zipfile.ZipFile(archive_path, "r") as archive:
             archive.extractall(extract_dir)
         root = _pick_extracted_root(extract_dir)
+        sys.stdout.write("[update] Applying update files...\n")
+        sys.stdout.flush()
         _copy_tree(root, project_root)
     return UpdateApplyResult(
         message=f"Updated scripts to {info.version}. Please run the command again.",
@@ -206,7 +267,9 @@ def _apply_exe_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
     current_exe = Path(sys.executable).resolve()
     staged_exe = current_exe.with_name(f"{current_exe.stem}.new{current_exe.suffix}")
     download_target = current_exe.with_name(f"{current_exe.stem}.download{current_exe.suffix}")
-    _download_file(info.exe_url, download_target, timeout)
+    _download_file(info.exe_url, download_target, timeout, prefix="[update]")
+    sys.stdout.write("[update] Verifying package integrity...\n")
+    sys.stdout.flush()
     _verify_sha256(download_target, info.exe_sha256)
     if staged_exe.exists():
         staged_exe.unlink()
@@ -235,9 +298,7 @@ def _apply_exe_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
     create_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     subprocess.Popen(["cmd.exe", "/c", str(script_path)], creationflags=create_console)
     return UpdateApplyResult(
-        message=(
-            f"Update {info.version} downloaded. vd-dl will restart with the new version."
-        ),
+        message=f"Update {info.version} downloaded. vd-dl will restart with the new version.",
         restart_required=True,
     )
 
