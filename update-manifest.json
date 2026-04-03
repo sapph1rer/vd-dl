@@ -1,12 +1,12 @@
 {
-  "version": "0.13.3",
+  "version": "0.13.2",
   "notes": "Bug fixes and stability improvements.",
   "script": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vddl.zip",
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.2/vddl.zip",
     "sha256": "e8071fd51d30a9d43eb8620614aed790bab3821949435cf3f466cc2bb928421d"
   },
   "exe": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vd-dl.exe",
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.2/vd-dl.exe",
     "sha256": "51effc71cca5a658413586fad968dafeab1cf5b0a313622eec2bdfa074ef1f7b"
   }
 }
