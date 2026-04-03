@@ -1,12 +1,16 @@
 {
-  "version": "0.13.2",
-  "notes": "Improvements update function.",
+  "version": "0.13.3",
+  "notes": "Improvements add change the update function to be better.",
   "script": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.2/vddl.zip",
-    "sha256": "7b9db5e4a1ffb1cf330d19602535da6c7a9130f70141d23a664a81c206e80f86"
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vddl.zip",
+    "sha256": "0087d09a731ad1ddc081c9d0f384cd8263ea62891563735dabc617701d147cfe"
   },
   "exe": {
-    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.2/vd-dl.exe",
-    "sha256": "dc8d4823f9082501f10678cfaee040894f6839f3eb29023e3ea35c3ed4335f3b"
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vd-dl.exe",
+    "sha256": "837dd8f7dc8f57ab23f8076ca2f95c0f1edbd96d3dfc0be6bbb9fc0e2179a43f"
+  },
+  "updater": {
+    "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.3/vddl-updater.exe",
+    "sha256": "969b6cbe07ffd482fc3b5c25fda5a921a530b3aa54fa4af3be4cb752563e535b"
   }
 }
