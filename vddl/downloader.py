@@ -56,6 +56,18 @@ from .output import Colorizer, ProgressPrinter, _supports_color
 
 
 class Downloader:
+    _WEB_EXTRACTOR_RULES: Tuple[Tuple[str, str, str, bool], ...] = (
+        ("overmovies.com", "Overmovies", "_extract_overmovies_media_url", False),
+        ("037hddmovie.com", "037HDDMovie", "_extract_037hddmovie_media_url", False),
+        ("serie-days.com", "Serie-Days", "_extract_seriedays_media_url", True),
+        ("goseries4k.com", "GoSeries4K", "_extract_goseries4k_media_url", True),
+        ("movie2freehd.com", "Movie2FreeHD", "_extract_movie2freehd_media_url", True),
+        ("proxyplayerth.com", "ProxyPlayerTH", "_extract_proxyplayerth_media_url", False),
+        ("play-heyhd.com", "Play-HeyHD", "_extract_playheyhd_media_url", False),
+        ("ok-nah.com", "OK-NAH", "_extract_oknah_media_url", False),
+        ("24playerhd.com", "24PlayerHD", "_extract_24playerhd_media_url", False),
+    )
+
     def __init__(
         self,
         output: Optional[str],
@@ -293,34 +305,24 @@ class Downloader:
     def _should_use_browser_transport(self, url: str) -> bool:
         return self._host_matches(url, "cdn-nanaplayer.com")
 
+    @classmethod
+    def list_supported_extract_websites(cls) -> List[Dict[str, object]]:
+        return [
+            {
+                "host": host,
+                "name": name,
+                "supports_episode_selection": supports_episode_selection,
+            }
+            for host, name, _, supports_episode_selection in cls._WEB_EXTRACTOR_RULES
+        ]
+
     def _extract_supported_webpage_url(self, url: str) -> Optional[str]:
-        if self._host_matches(url, "overmovies.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from Overmovies page")
-            return self._extract_overmovies_media_url(url)
-        if self._host_matches(url, "037hddmovie.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from 037HDDMovie page")
-            return self._extract_037hddmovie_media_url(url)
-        if self._host_matches(url, "serie-days.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from Serie-Days page")
-            return self._extract_seriedays_media_url(url)
-        if self._host_matches(url, "goseries4k.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from GoSeries4K page")
-            return self._extract_goseries4k_media_url(url)
-        if self._host_matches(url, "movie2freehd.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from Movie2FreeHD page")
-            return self._extract_movie2freehd_media_url(url)
-        if self._host_matches(url, "proxyplayerth.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from ProxyPlayer page")
-            return self._extract_proxyplayerth_media_url(url)
-        if self._host_matches(url, "play-heyhd.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from Play-HeyHD page")
-            return self._extract_playheyhd_media_url(url)
-        if self._host_matches(url, "ok-nah.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from OK-NAH page")
-            return self._extract_oknah_media_url(url)
-        if self._host_matches(url, "24playerhd.com"):
-            self.printer.message(f"{self._probe_tag()} Extracting source from 24PlayerHD page")
-            return self._extract_24playerhd_media_url(url)
+        for host, name, handler_name, _ in self._WEB_EXTRACTOR_RULES:
+            if not self._host_matches(url, host):
+                continue
+            self.printer.message(f"{self._probe_tag()} Extracting source from {name} page")
+            handler = getattr(self, handler_name)
+            return handler(url)
         return None
 
     def _ensure_browser_driver(self):
@@ -1379,12 +1381,15 @@ class Downloader:
         return []
 
     def get_episode_options(self, url: str) -> List[EpisodeOption]:
-        if self._host_matches(url, "serie-days.com"):
-            return self._extract_seriedays_episode_options(url)
-        if self._host_matches(url, "goseries4k.com"):
-            return self._extract_goseries4k_episode_options(url)
-        if self._host_matches(url, "movie2freehd.com"):
-            return self._extract_movie2freehd_episode_options(url)
+        for host, _, _, supports_episode_selection in self._WEB_EXTRACTOR_RULES:
+            if not supports_episode_selection or not self._host_matches(url, host):
+                continue
+            if host == "serie-days.com":
+                return self._extract_seriedays_episode_options(url)
+            if host == "goseries4k.com":
+                return self._extract_goseries4k_episode_options(url)
+            if host == "movie2freehd.com":
+                return self._extract_movie2freehd_episode_options(url)
         return []
 
     def _pick_hls_variant(

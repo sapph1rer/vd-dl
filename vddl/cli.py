@@ -35,7 +35,8 @@ MENU_LIST_FORMATS = "2"
 MENU_ADVANCED = "3"
 MENU_UPDATE = "4"
 MENU_RESUME = "5"
-MENU_EXIT = "6"
+MENU_EXTRACT_SITES = "6"
+MENU_EXIT = "7"
 ALT_SCREEN_ENTER = "\033[?1049h\033[2J\033[H"
 ALT_SCREEN_EXIT = "\033[?1049l"
 PROFILE_BALANCED = "balanced"
@@ -271,6 +272,22 @@ def _print_header(session_config: InteractiveConfig) -> None:
     print(f"Profile: {profile} | quality {session_config.quality} | workers {workers_text}")
     print(f"Referer: {referer_text}")
     print()
+
+
+def _print_extract_supported_websites() -> None:
+    print("Extract supported websites")
+    print()
+    websites = Downloader.list_supported_extract_websites()
+    if not websites:
+        print("No extract website rules found.")
+        return
+
+    for index, website in enumerate(websites, 1):
+        host = str(website.get("host") or "-")
+        name = str(website.get("name") or host)
+        episode_flag = "yes" if bool(website.get("supports_episode_selection")) else "no"
+        print(f"{index}. {name}")
+        print(f"   Host: {host} | Episode selection: {episode_flag}")
 
 
 def _prompt_menu_choice(text: str, valid_choices: set[str], default: Optional[str] = None) -> str:
@@ -1153,7 +1170,8 @@ def interactive_main(stderr_colors: Colorizer) -> int:
                     print("3. Download settings     Speed profile, retries, referer, default quality")
                     print("4. Check updates         Check and install new versions")
                     print("5. Resume manager        Resume or clean interrupted jobs")
-                    print("6. Exit                  Close vd-dl")
+                    print("6. Extract support web   Show websites with built-in extractor support")
+                    print("7. Exit                  Close vd-dl")
                     print()
                     choice = _prompt_menu_choice(
                         "Choose an option",
@@ -1163,6 +1181,7 @@ def interactive_main(stderr_colors: Colorizer) -> int:
                             MENU_ADVANCED,
                             MENU_UPDATE,
                             MENU_RESUME,
+                            MENU_EXTRACT_SITES,
                             MENU_EXIT,
                         },
                         MENU_DOWNLOAD,
@@ -1191,6 +1210,13 @@ def interactive_main(stderr_colors: Colorizer) -> int:
                     result = _resume_manager(session_config, stderr_colors)
                     if result != 0:
                         last_exit = result
+                    _pause()
+                    continue
+                if choice == MENU_EXTRACT_SITES:
+                    _clear_screen()
+                    _print_header(session_config)
+                    _print_extract_supported_websites()
+                    print()
                     _pause()
                     continue
                 if choice == MENU_ADVANCED:
