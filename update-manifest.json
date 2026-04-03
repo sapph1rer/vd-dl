@@ -3,10 +3,10 @@
   "notes": "Bug fixes and stability improvements.",
   "script": {
     "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vddl.zip",
-    "sha256": "SHA256_OF_VDDL_ZIP"
+    "sha256": "9547937A33EFCF375F4229C5328F1FF19B0DF8DB21212A933EFFC12456D0AFB5"
   },
   "exe": {
     "url": "https://github.com/sapph1rer/vd-dl/releases/download/v0.13.1/vd-dl.exe",
-    "sha256": "SHA256_OF_VD_DL_EXE"
+    "sha256": "7AE7EBAEADD9EB34E968DBF2E13E802C58918AB4E28CF150F16FA601A6AC1BC8"
   }
 }
