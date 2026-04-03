@@ -1,8 +1,13 @@
 import argparse
+import json
 import os
+import re
+import shutil
 import sys
+from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from .downloader import Downloader
 from .errors import DownloadError, UpdateError
@@ -29,13 +34,30 @@ MENU_DOWNLOAD = "1"
 MENU_LIST_FORMATS = "2"
 MENU_ADVANCED = "3"
 MENU_UPDATE = "4"
-MENU_EXIT = "5"
+MENU_RESUME = "5"
+MENU_EXIT = "6"
 ALT_SCREEN_ENTER = "\033[?1049h\033[2J\033[H"
 ALT_SCREEN_EXIT = "\033[?1049l"
 PROFILE_BALANCED = "balanced"
 PROFILE_FASTEST = "fastest"
 PROFILE_SAFE = "safe"
 PROFILE_CUSTOM = "custom"
+
+
+@dataclass
+class ResumeEntry:
+    index: int
+    state_path: Path
+    output_path: Path
+    resume_url: str
+    kind: str
+    updated_at: int
+    done_bytes: int
+    total_bytes: int
+    done_fragments: int
+    total_fragments: int
+    has_partial_data: bool
+    valid: bool
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -260,6 +282,154 @@ def _prompt_menu_choice(text: str, valid_choices: set[str], default: Optional[st
         print(f"Please choose {valid_text}")
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _find_resume_state_files(root: Path) -> List[Path]:
+    items: List[Path] = []
+    for item in root.rglob("*.vddl-state.json"):
+        try:
+            item.stat()
+        except OSError:
+            continue
+        items.append(item)
+    return sorted(items, key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _output_from_state_path(state_path: Path) -> Path:
+    suffix = ".vddl-state.json"
+    name = state_path.name
+    if name.endswith(suffix):
+        return state_path.with_name(name[: -len(suffix)])
+    return state_path.with_suffix("")
+
+
+def _format_when(timestamp: int) -> str:
+    if timestamp <= 0:
+        return "unknown"
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
+
+
+def _delete_path(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _build_resume_entry(index: int, state_path: Path) -> ResumeEntry:
+    output_path = _output_from_state_path(state_path)
+    resume_url = ""
+    kind = "unknown"
+    updated_at = _safe_int(state_path.stat().st_mtime)
+    total_bytes = 0
+    total_fragments = 0
+    valid = False
+    has_partial_data = False
+
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+
+    if isinstance(payload, dict):
+        kind = str(payload.get("kind") or "unknown")
+        updated_at = _safe_int(payload.get("updated_at"), updated_at)
+        total_bytes = _safe_int(payload.get("total_bytes"), 0)
+        total_fragments = _safe_int(payload.get("total_fragments"), 0)
+        resume_url = str(payload.get("final_url") or payload.get("url") or "").strip()
+        valid = bool(resume_url)
+
+    part_file = output_path.with_suffix(output_path.suffix + ".part")
+    parts_dir = output_path.with_suffix(output_path.suffix + ".parts")
+    audio_parts_dir = output_path.with_suffix(output_path.suffix + ".audio.parts")
+
+    done_bytes = 0
+    done_fragments = 0
+    if part_file.exists():
+        has_partial_data = True
+        done_bytes += _safe_int(part_file.stat().st_size)
+    if parts_dir.exists():
+        part_files = list(parts_dir.glob("*.part"))
+        if part_files:
+            has_partial_data = True
+            done_fragments += len(part_files)
+            done_bytes += sum(_safe_int(part.stat().st_size) for part in part_files)
+    if audio_parts_dir.exists():
+        audio_part_files = list(audio_parts_dir.glob("*.part"))
+        if audio_part_files:
+            has_partial_data = True
+
+    return ResumeEntry(
+        index=index,
+        state_path=state_path,
+        output_path=output_path,
+        resume_url=resume_url,
+        kind=kind,
+        updated_at=updated_at,
+        done_bytes=done_bytes,
+        total_bytes=total_bytes,
+        done_fragments=done_fragments,
+        total_fragments=total_fragments,
+        has_partial_data=has_partial_data,
+        valid=valid,
+    )
+
+
+def _collect_resume_entries(root: Path) -> List[ResumeEntry]:
+    entries: List[ResumeEntry] = []
+    for idx, state_path in enumerate(_find_resume_state_files(root), 1):
+        entries.append(_build_resume_entry(idx, state_path))
+    return entries
+
+
+def _format_size_short(num: int) -> str:
+    value = float(max(num, 0))
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    idx = 0
+    while value >= 1024.0 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    return f"{value:,.2f}{units[idx]}"
+
+
+def _resume_progress_label(entry: ResumeEntry) -> str:
+    if entry.total_fragments > 0:
+        return f"{entry.done_fragments}/{entry.total_fragments} fragments"
+    if entry.total_bytes > 0:
+        pct = min((entry.done_bytes / max(entry.total_bytes, 1)) * 100.0, 100.0)
+        return (
+            f"{pct:5.1f}% "
+            f"{_format_size_short(entry.done_bytes)}/"
+            f"{_format_size_short(entry.total_bytes)}"
+        )
+    if entry.done_bytes > 0:
+        return f"{_format_size_short(entry.done_bytes)} downloaded"
+    return "no partial data"
+
+
+def _delete_resume_artifacts(entry: ResumeEntry) -> None:
+    _delete_path(entry.state_path)
+    _delete_path(entry.output_path.with_suffix(entry.output_path.suffix + ".part"))
+    _delete_path(entry.output_path.with_suffix(entry.output_path.suffix + ".parts"))
+    _delete_path(entry.output_path.with_suffix(entry.output_path.suffix + ".audio.parts"))
+    _delete_path(entry.output_path.with_name(entry.output_path.name + ".ts"))
+    _delete_path(entry.output_path.with_name(entry.output_path.name + ".audio.ts"))
+    _delete_path(entry.output_path.with_name(entry.output_path.name + ".video.mp4"))
+
+
 def _resolve_quality_prompt(default_quality: str) -> str:
     print()
     print("Choose quality")
@@ -465,6 +635,118 @@ def _edit_advanced_settings(session_config: InteractiveConfig) -> InteractiveCon
     )
 
 
+def _clean_error_message(message: str) -> str:
+    text = (message or "").strip()
+    text = re.sub(r"^\[[^\]]+\]\s*", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or "Unknown error"
+
+
+def _build_download_error_guidance(message: str, config: InteractiveConfig) -> tuple[str, list[str]]:
+    text = message.lower()
+    category = "Download failed"
+    suggestions: list[str] = []
+
+    if "drm-protected" in text or "encrypted hls is not supported" in text:
+        category = "DRM / Encrypted stream"
+        suggestions = [
+            "This source is DRM/encrypted and cannot be downloaded by native mode.",
+            "Try another source that serves non-DRM .m3u8/.mp4.",
+        ]
+    elif "http error 403" in text or "forbidden" in text:
+        category = "Access denied (403)"
+        suggestions = [
+            "Refresh the page and copy a fresh media URL (signed URLs often expire).",
+            "Set the correct referer in Advanced settings, then retry.",
+            "If the site requires login/session, open the source page first and retry quickly.",
+        ]
+    elif "http error 401" in text or "unauthorized" in text:
+        category = "Unauthorized (401)"
+        suggestions = [
+            "This source requires authentication/session.",
+            "Open the source page in browser again and retry with a fresh link.",
+        ]
+    elif "ssl" in text or "certificate verify failed" in text:
+        category = "TLS/SSL handshake failed"
+        suggestions = [
+            "Your network path may intercept HTTPS or present an invalid certificate.",
+            "Try another network/VPN off, and make sure system date/time is correct.",
+            "Update Python/CA certificates on this machine, then retry.",
+        ]
+    elif "http error 429" in text or "too many requests" in text or "rate limit" in text:
+        category = "Rate limited (429)"
+        suggestions = [
+            "Use Safe profile or reduce workers in Advanced settings.",
+            "Wait a few minutes, then retry.",
+            "Avoid running multiple downloads on the same host at once.",
+        ]
+    elif re.search(r"http error 5\d\d", text) or "timed out" in text or "connection" in text:
+        category = "Upstream server unstable (5xx / timeout)"
+        suggestions = [
+            "Use Safe profile (higher timeout, lower concurrency) and retry.",
+            "Retry later when server load is lower.",
+            "If the same host keeps failing, try another mirror/source.",
+        ]
+    elif "ffmpeg is required" in text:
+        category = "Missing ffmpeg"
+        suggestions = [
+            "Install ffmpeg and make sure `ffmpeg` is available in PATH.",
+            "Restart terminal after installation and run again.",
+        ]
+    elif "did not expose" in text or "failed to extract" in text or "supports direct media urls and hls manifests only" in text:
+        category = "Webpage extractor could not find media URL"
+        suggestions = [
+            "Use the webpage URL that contains the actual player, not a listing page.",
+            "If extractor still fails, capture direct .m3u8/.mp4 URL from browser Network tab.",
+            "Set referer when the host blocks direct access.",
+        ]
+    elif "no segment parts were downloaded" in text or "no segments found in media playlist" in text:
+        category = "HLS fragments unavailable"
+        suggestions = [
+            "Manifest may be expired or blocked for your session.",
+            "Refresh source page, copy a new .m3u8 URL, and retry.",
+            "Try a different quality variant from list-formats.",
+        ]
+    elif "unsupported quality selector" in text:
+        category = "Invalid quality option"
+        suggestions = [
+            "Use `best`, `worst`, or a numeric height like `720`.",
+            "Use list-formats first to see available variants.",
+        ]
+    elif "failed to remux hls" in text or "failed to mux hls audio/video streams" in text:
+        category = "Post-processing failed"
+        suggestions = [
+            "Check that ffmpeg is installed and working.",
+            "Check free disk space and file write permissions.",
+        ]
+    else:
+        suggestions = [
+            "Retry with Safe profile in Advanced settings.",
+            "If this is a webpage URL, try extracting the direct .m3u8/.mp4 first.",
+            "If issue persists, share the full error line and source URL host.",
+        ]
+
+    current_settings = (
+        f"Current settings: quality={config.quality}, workers={config.workers or 'auto'}, "
+        f"retries={config.retries}, timeout={config.timeout}s, referer={config.referer or 'none'}"
+    )
+    suggestions.append(current_settings)
+    return category, suggestions
+
+
+def _print_download_error_summary(message: str, config: InteractiveConfig, colors: Colorizer) -> None:
+    cleaned = _clean_error_message(message)
+    category, suggestions = _build_download_error_guidance(cleaned, config)
+
+    print(f"{colors.error('[error-summary]')} {category}", file=sys.stderr)
+    print(f"{colors.tag('Reason:')} {cleaned}", file=sys.stderr)
+    if config.url:
+        print(f"{colors.tag('Source:')} {config.url}", file=sys.stderr)
+    print(f"{colors.tag('How to fix:')}", file=sys.stderr)
+    for idx, line in enumerate(suggestions, 1):
+        print(f"  {idx}. {line}", file=sys.stderr)
+
+
 def _run_download(
     config: InteractiveConfig,
     stderr_colors: Colorizer,
@@ -489,9 +771,11 @@ def _run_download(
         return 130
     except DownloadError as exc:
         print(f"{stderr_colors.error('[error]')} {exc}", file=sys.stderr)
+        _print_download_error_summary(str(exc), config, stderr_colors)
         return 1
     except Exception as exc:
         print(f"{stderr_colors.error('[error]')} Unexpected error: {exc}", file=sys.stderr)
+        _print_download_error_summary(f"Unexpected error: {exc}", config, stderr_colors)
         return 1
     finally:
         downloader.close()
@@ -683,6 +967,114 @@ def _auto_check_updates_on_startup(stderr_colors: Colorizer) -> bool:
     return True
 
 
+def _resume_manager(
+    session_config: InteractiveConfig,
+    stderr_colors: Colorizer,
+) -> int:
+    last_exit = 0
+    while True:
+        print("Resume manager")
+        print()
+        root = Path.cwd()
+        entries = _collect_resume_entries(root)
+        if not entries:
+            print(f"No resume state files found under {root}")
+        else:
+            for entry in entries:
+                if entry.valid and entry.has_partial_data:
+                    status = "ready"
+                elif entry.valid:
+                    status = "restartable"
+                else:
+                    status = "broken"
+                print(
+                    f"{entry.index}. [{status}] {entry.output_path.name} | {entry.kind} | "
+                    f"{_resume_progress_label(entry)} | {_format_when(entry.updated_at)}"
+                )
+        print()
+        print("1. Resume job")
+        print("2. Delete one job state")
+        print("3. Clean broken/empty states")
+        print("4. Refresh list")
+        print("5. Back")
+        print()
+        default_action = "1" if entries else "5"
+        action = _prompt_menu_choice("Choose action", {"1", "2", "3", "4", "5"}, default_action)
+        if action == "5":
+            return last_exit
+        if action == "4":
+            print()
+            continue
+        if action == "1":
+            if not entries:
+                print("Nothing to resume.")
+                print()
+                continue
+            choices = {str(entry.index) for entry in entries}
+            default_idx = next(
+                (str(entry.index) for entry in entries if entry.valid),
+                str(entries[0].index),
+            )
+            selected_idx = _prompt_menu_choice("Job number", choices, default_idx)
+            selected = next(entry for entry in entries if str(entry.index) == selected_idx)
+            if not selected.valid:
+                print("Selected state is invalid and cannot be resumed.")
+                print()
+                continue
+            if not selected.has_partial_data:
+                print("No partial fragments found. The downloader will restart from source URL in this state.")
+                print()
+            run_config = InteractiveConfig(
+                url=selected.resume_url,
+                output=str(selected.output_path),
+                retries=session_config.retries,
+                timeout=session_config.timeout,
+                workers=session_config.workers,
+                referer=session_config.referer,
+                quality=session_config.quality,
+                list_formats=False,
+                update_manifest=session_config.update_manifest,
+            )
+            print(f"Resuming {selected.output_path.name}")
+            print()
+            result = _run_download(run_config, stderr_colors, screen_mode=True)
+            if result != 0:
+                last_exit = result
+            print()
+            continue
+        if action == "2":
+            if not entries:
+                print("Nothing to delete.")
+                print()
+                continue
+            choices = {str(entry.index) for entry in entries}
+            selected_idx = _prompt_menu_choice("Job number to delete", choices, str(entries[0].index))
+            selected = next(entry for entry in entries if str(entry.index) == selected_idx)
+            if not _prompt_yes_no(f"Delete resume data for {selected.output_path.name}", default=False):
+                print("Delete cancelled.")
+                print()
+                continue
+            _delete_resume_artifacts(selected)
+            print(f"Deleted resume data for {selected.output_path.name}")
+            print()
+            continue
+        if action == "3":
+            stale_entries = [
+                entry
+                for entry in entries
+                if (not entry.valid) or ((not entry.has_partial_data) and (not entry.output_path.exists()))
+            ]
+            if not stale_entries:
+                print("No broken/empty states to clean.")
+                print()
+                continue
+            for entry in stale_entries:
+                _delete_resume_artifacts(entry)
+            print(f"Cleaned {len(stale_entries)} broken/empty state(s).")
+            print()
+            continue
+
+
 def _download_more_episodes_if_requested(
     session_config: InteractiveConfig,
     config: InteractiveConfig,
@@ -760,11 +1152,19 @@ def interactive_main(stderr_colors: Colorizer) -> int:
                     print("2. List available formats Inspect resolutions before downloading")
                     print("3. Download settings     Speed profile, retries, referer, default quality")
                     print("4. Check updates         Check and install new versions")
-                    print("5. Exit                  Close vd-dl")
+                    print("5. Resume manager        Resume or clean interrupted jobs")
+                    print("6. Exit                  Close vd-dl")
                     print()
                     choice = _prompt_menu_choice(
                         "Choose an option",
-                        {MENU_DOWNLOAD, MENU_LIST_FORMATS, MENU_ADVANCED, MENU_UPDATE, MENU_EXIT},
+                        {
+                            MENU_DOWNLOAD,
+                            MENU_LIST_FORMATS,
+                            MENU_ADVANCED,
+                            MENU_UPDATE,
+                            MENU_RESUME,
+                            MENU_EXIT,
+                        },
                         MENU_DOWNLOAD,
                     )
                 except KeyboardInterrupt:
@@ -783,6 +1183,14 @@ def interactive_main(stderr_colors: Colorizer) -> int:
                     print()
                     if should_exit_now:
                         return 0
+                    _pause()
+                    continue
+                if choice == MENU_RESUME:
+                    _clear_screen()
+                    _print_header(session_config)
+                    result = _resume_manager(session_config, stderr_colors)
+                    if result != 0:
+                        last_exit = result
                     _pause()
                     continue
                 if choice == MENU_ADVANCED:

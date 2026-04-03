@@ -27,6 +27,8 @@ class UpdateInfo:
     script_sha256: Optional[str]
     exe_url: Optional[str]
     exe_sha256: Optional[str]
+    updater_url: Optional[str]
+    updater_sha256: Optional[str]
 
 
 @dataclass
@@ -65,11 +67,14 @@ def _read_manifest_payload(payload: dict, manifest_url: str) -> UpdateInfo:
 
     script_cfg = payload.get("script") if isinstance(payload.get("script"), dict) else {}
     exe_cfg = payload.get("exe") if isinstance(payload.get("exe"), dict) else {}
+    updater_cfg = payload.get("updater") if isinstance(payload.get("updater"), dict) else {}
 
     script_url = str(payload.get("script_url") or script_cfg.get("url") or "").strip() or None
     script_sha256 = str(payload.get("script_sha256") or script_cfg.get("sha256") or "").strip().lower() or None
     exe_url = str(payload.get("exe_url") or exe_cfg.get("url") or "").strip() or None
     exe_sha256 = str(payload.get("exe_sha256") or exe_cfg.get("sha256") or "").strip().lower() or None
+    updater_url = str(payload.get("updater_url") or updater_cfg.get("url") or "").strip() or None
+    updater_sha256 = str(payload.get("updater_sha256") or updater_cfg.get("sha256") or "").strip().lower() or None
 
     return UpdateInfo(
         version=version,
@@ -79,6 +84,8 @@ def _read_manifest_payload(payload: dict, manifest_url: str) -> UpdateInfo:
         script_sha256=script_sha256,
         exe_url=exe_url,
         exe_sha256=exe_sha256,
+        updater_url=updater_url,
+        updater_sha256=updater_sha256,
     )
 
 
@@ -261,7 +268,7 @@ def _apply_script_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
     )
 
 
-def _apply_exe_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
+def _apply_exe_update_legacy(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
     if not info.exe_url:
         raise UpdateError("No exe update URL in manifest.")
     current_exe = Path(sys.executable).resolve()
@@ -301,6 +308,55 @@ def _apply_exe_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
         message=f"Update {info.version} downloaded. vd-dl will restart with the new version.",
         restart_required=True,
     )
+
+
+def _apply_exe_update_external_updater(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
+    if not info.exe_url:
+        raise UpdateError("No exe update URL in manifest.")
+    if not info.updater_url:
+        raise UpdateError("No updater URL in manifest.")
+
+    current_exe = Path(sys.executable).resolve()
+    updater_path = Path(tempfile.gettempdir()) / f"vddl-updater-{info.version}.exe"
+    _download_file(info.updater_url, updater_path, timeout, prefix="[update]")
+    sys.stdout.write("[update] Verifying updater integrity...\n")
+    sys.stdout.flush()
+    _verify_sha256(updater_path, info.updater_sha256)
+
+    command = [
+        str(updater_path),
+        "--target",
+        str(current_exe),
+        "--source-url",
+        info.exe_url,
+        "--wait-pid",
+        str(os.getpid()),
+        "--timeout",
+        str(timeout),
+        "--version",
+        info.version,
+    ]
+    if info.exe_sha256:
+        command.extend(["--expected-sha256", info.exe_sha256])
+
+    create_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    try:
+        subprocess.Popen(command, creationflags=create_console, close_fds=True)
+    except OSError as exc:
+        raise UpdateError(f"Failed to launch updater executable: {exc}") from exc
+
+    return UpdateApplyResult(
+        message=(
+            f"Updater launched for {info.version}. vd-dl will close now and restart automatically."
+        ),
+        restart_required=True,
+    )
+
+
+def _apply_exe_update(info: UpdateInfo, timeout: float) -> UpdateApplyResult:
+    if os.name == "nt" and info.updater_url:
+        return _apply_exe_update_external_updater(info, timeout)
+    return _apply_exe_update_legacy(info, timeout)
 
 
 def apply_self_update(info: UpdateInfo, timeout: float = 120.0) -> UpdateApplyResult:

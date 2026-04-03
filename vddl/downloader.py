@@ -2187,6 +2187,7 @@ class Downloader:
             f"{self.stdout_colors.notice(str(actual_workers))} connections"
         )
 
+        completed = False
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
                 future_map: Dict[concurrent.futures.Future[int], RangeJob] = {}
@@ -2224,8 +2225,14 @@ class Downloader:
                             if not chunk:
                                 break
                             out_fh.write(chunk)
+            completed = True
         finally:
-            self._cleanup_parts(temp_dir)
+            if completed:
+                self._cleanup_parts(temp_dir)
+            else:
+                self.printer.message(
+                    f"{self._download_tag()} Keeping partial range parts for resume in {temp_dir.name}"
+                )
 
     def _download_http_file_single(
         self,
@@ -2476,9 +2483,15 @@ class Downloader:
                     f"{self._hls_tag()} Merging {len(segments)} fragments into {merged_output.name}"
                 )
                 self._merge_segments(temp_dir, merged_output, stats)
-        finally:
-            self._cleanup_parts(temp_dir)
-            self._cleanup_parts(audio_temp_dir)
+        except Exception:
+            self.printer.message(
+                f"{self._hls_tag()} Keeping partial fragments for resume in {temp_dir.name}"
+            )
+            if audio_temp_dir.exists():
+                self.printer.message(
+                    f"{self._hls_tag()} Keeping companion audio fragments for resume in {audio_temp_dir.name}"
+                )
+            raise
 
         stats.total_bytes = max(stats.done_bytes, stats.total_bytes)
         self.printer.progress(stats)
@@ -2496,6 +2509,8 @@ class Downloader:
             else:
                 self._fixup_m3u8_container(merged_output, output)
                 self._cleanup_file(merged_output)
+        self._cleanup_parts(temp_dir)
+        self._cleanup_parts(audio_temp_dir)
         self._delete_resume_state(output)
         self.printer.message(f"{self._download_tag()} Finished: {output}")
         return output
